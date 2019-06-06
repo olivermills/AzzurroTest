@@ -1,0 +1,331 @@
+---
+title: 'LendingClub: Predicting Loan Defaults'
+author: "Oliver Mills"
+date: "6 June 2019"
+output:
+  ioslides_presentation:
+    logo: logo.png
+  beamer_presentation: default
+  logo: logo.png
+  slidy_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, echo=FALSE}
+#Azzurro logo
+logo<-"logo.png"
+```
+## Background
+
+LendingClub is a peer-to-peer lending platform established in the US in 2006. Borrowers can request unsecured personal loans between \$1,000 and \$40,000 from potential investors.
+
+LendingClub had a strong start, raising $1 billion in the 2014 initial public offering but ran into some investment issues in 2016 as well as an internal scandal regarding the CEO Renaud Laplanche. 
+
+You can download several datasets from the LendinClub website about lenders and borrowers using the platform. I decided to see if we could use some of the variables to predict if someone has paid back their loan in full.
+
+## Dataset
+
+```{r}
+#reading in the data and checking the dimensions
+loan_data <- read.csv('loan_data.csv')
+dim(loan_data)
+```
+
+So we have about 10,000 observations, 13 predictor variables and one binary response variable 'not.fully.paid'. 
+
+0 = loan has been fully paid.
+
+1 = loan has not been fully paid.
+
+## Variables
+
+```{r}
+#variables in table part 1
+options("kableExtra.html.bsTable" = T)
+suppressMessages(library(kableExtra))
+
+text_tbl <- data.frame(
+  Variable = colnames(loan_data)[1:7],
+  Description = c(
+    "1 if the customer meets the credit underwriting criteria of LendingClub.com, and 0 otherwise.",
+    'The purpose of the loan (takes values "credit_card", "debt_consolidation", "educational", "major_purchase", "small_business", and "all_other").',
+    'The interest rate of the loan, as a proportion (a rate of 11% would be stored as 0.11). Borrowers judged by LendingClub.com to be more risky are assigned higher interest rates.',
+    'The monthly installments owed by the borrower if the loan is funded.',
+    'The natural log of the self-reported annual income of the borrower.',
+    'The debt-to-income ratio of the borrower (amount of debt divided by annual income).',
+    'The FICO credit score of the borrower.'
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F, bootstrap_options = "striped", font_size = 14) %>%
+  column_spec(1, bold = T, border_right = T)
+```
+
+## Variables (cont.)
+
+```{r}
+#variables in table part 2
+options("kableExtra.html.bsTable" = T)
+suppressMessages(library(kableExtra))
+
+text_tbl <- data.frame(
+  Variable = colnames(loan_data)[8:13],
+  Description = c(
+    'The number of days the borrower has had a credit line.',
+    "The borrower's revolving balance (amount unpaid at the end of the credit card billing cycle).",
+    "The borrower's revolving line utilization rate (the amount of the credit line used relative to total credit available).",
+    "The borrower's number of inquiries by creditors in the last 6 months.",
+    "The number of times the borrower had been 30+ days past due on a payment in the past 2 years.",
+    "The borrower's number of derogatory public records (bankruptcy filings, tax liens, or judgments)."
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F, bootstrap_options = "striped", font_size = 14) %>%
+  column_spec(1, bold = T, border_right = T)
+```
+
+```{r, include=FALSE}
+#reading the data in, checking the structure and summary
+str(loan_data)
+summary(loan_data)
+
+#need to convert some columns to categorical factors
+loan_data$delinq.2yrs <- factor(loan_data$delinq.2yrs)
+loan_data$pub.rec <- factor(loan_data$pub.rec)
+loan_data$not.fully.paid <- factor(loan_data$not.fully.paid)
+loan_data$credit.policy <- factor(loan_data$credit.policy)
+loan_data$inq.last.6mths <- factor(loan_data$inq.last.6mths)
+```
+
+## Exploration
+Lower credit scores appear to have more loans in general - the data appears to be a positively skewed multimodal distribution (light blue = fully paid, dark blue = not fully paid).
+
+```{r,  fig.height = 3, fig.width = 8}
+library(ggplot2)
+library(ggthemes)
+suppressWarnings(suppressMessages(library(dplyr)))
+
+#creating plot of FICO vs loan payment status
+p1 <- loan_data %>%
+   ggplot(aes(fico)) +
+   geom_histogram(aes(fill=not.fully.paid),bins=35,alpha=0.9) +
+   theme_minimal() +
+   xlab("FICO (Credit Score)") +
+   ggtitle("FICO (Split by Loan Payment Status)") +
+   scale_fill_manual(values=c('#009fe3','#25274d'))
+plot(p1)
+```
+
+---
+
+Lots of debt consolidation loans - there doesn't appear to be much difference between the groups in terms of loan payment status
+
+```{r}
+p2 <- loan_data %>%
+   ggplot(aes(factor(purpose))) +
+   geom_bar(aes(fill=not.fully.paid),position="dodge") +
+   theme_minimal() +
+   scale_fill_manual(values=c('#009fe3','#25274d')) +
+   xlab("Loan Purpose") +
+   ggtitle("Loan Purpose (Split by Loan Payment Status)") +
+   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+plot(p2)
+```
+
+---
+
+As expected, lower FICO/credit scores result in higher interest rates. There doesn't appear to be any distinct difference in loan payment status groups.
+
+```{r, fig.height = 4, fig.width = 7}
+p3 <- loan_data %>%
+   ggplot(aes(int.rate,fico)) +
+   geom_point(aes(color=not.fully.paid), alpha=0.6) +
+   theme_minimal() +
+   xlab("Interest Rate") +
+   ggtitle("Interest Rate vs. FICO score (Split by Loan Payment Status)") +
+   scale_colour_manual(values=c('#009fe3','#25274d'))
+plot(p3)
+```
+
+---
+
+If we look at the distribution between loan status we can see that there are alot more people paying the full loan than those who are charged off.
+
+We have an imbalanced response variable meaning that I will have upsample the minority class ('oversampling') during the train/test split.
+
+```{r, fig.height = 3, fig.width = 5}
+p4 <- loan_data %>%
+   ggplot(aes(not.fully.paid)) + 
+   geom_bar(aes(fill=not.fully.paid)) +
+   scale_fill_manual(values=c('#009fe3','#25274d'))
+plot(p4)
+```
+
+---
+
+Slightly higher median debt-to-income ratio for those who have not fully paid their loan off.
+
+```{r, fig.height = 5, fig.width = 7}
+p5 <- loan_data %>%
+   ggplot(aes(not.fully.paid, dti)) +
+   geom_boxplot(aes(color=not.fully.paid)) +
+   theme_minimal() +
+   xlab("Loan Payment Status") +
+   ggtitle("Debt to Income Ration vs Loan Payment Status") +
+   scale_colour_manual(values=c('#009fe3','#25274d'))
+plot(p5)
+```
+
+---
+
+Let's check the completeness and variance inflation factors (VIF) of the dataset. No missing values and VIF < 4 which means we probably don't have multi-collinearity issues.
+
+```{r, fig.height = 3, fig.width = 5}
+#visualise missing data
+suppressWarnings(suppressMessages(library(ISLR)))
+library(naniar)
+loan_data %>%
+   sample_n(1000) %>%
+   vis_miss()
+```
+
+
+```{r}
+#checking for multicollinearity
+suppressWarnings(suppressMessages(library(usdm)))
+multi.col <- suppressWarnings(suppressMessages(vif(loan_data)))
+```
+
+
+```{r, echo=TRUE}
+which(multi.col$VIF>4)
+```
+
+## Model 1
+Let's first try a Support Vector Machine (SVM) model. I've tried going to try a 70/30 split for the train and test datasets.
+
+```{r, include=FALSE}
+library(e1071)
+library(caret)
+library(ROCR)
+library(pROC)
+library(ROSE)
+library(MASS)
+#making results reproducible
+set.seed(1234)
+
+#splitting dataset 70/30
+trainIndex <- createDataPartition(loan_data$not.fully.paid, p = .7, list = FALSE, times = 1)
+loan_train <- loan_data[trainIndex,]
+loan_test <- loan_data[-trainIndex,]
+
+#checking the split between our two classes
+table(loan_train$not.fully.paid)
+```
+
+I need to oversample the minority class (those who haven't paid) - the class split looks alot better now in our training set
+
+```{r, echo=TRUE, include=TRUE}
+#over sampling minority class
+loan_train_oversample <- ovun.sample(not.fully.paid~., data=loan_train, method="over")$data
+
+#the split is looking good now.
+table(loan_train_oversample$not.fully.paid)
+```
+
+---
+
+```{r}
+#creating tuned svm model (played around with cost and gamma)
+tuned.svm.model <- svm(not.fully.paid~.,data=loan_train_oversample,cost=10,gamma=0.1)
+
+#predicting values on test set and creating confusion matrix
+predicted.svm <- predict(tuned.svm.model,loan_test[1:13],type="probabilities")
+```
+
+Once i've trained the model I then use it to predict the values in our test set. Here's a table of predicted vs actual results.
+
+```{r, echo=TRUE, include=TRUE}
+table(predicted.svm, loan_test$not.fully.paid, dnn = c("Predicted","Actual"))
+```
+
+The model has done well in predicting those that will pay off their loan (0's), but not so well for those that won't (1's). Let's take a look at the ROC and AUC.
+
+```{r, echo=TRUE, include=FALSE}
+#getting the ROC and AUC
+roc.svm = roc(loan_test$not.fully.paid,as.numeric(levels(predicted.svm))[predicted.svm])
+auc.curve = auc(roc.svm)
+```
+
+---
+
+```{r, echo=TRUE, include=TRUE, fig.height = 3, fig.width = 5}
+plot(roc.svm,legacy.axes=T,print.auc=T, col="red",main="ROC and AUC(SVM Model)")
+```
+
+The ROC curve is a performance metric for classification problems. The higher the area under the curve (AUC) is, the better the model is at predicting 0's as 0's and 1's as 1's. So, this model isn't very good at discriminating between our two classes. Let's try something else.
+
+
+## Model 2
+Let's fit a logistic regression model. I'll use the same 70/30 split, and create a prediction cutoff so that if the model predicts a value>0.5 it becomes 1 and 0 otherwise.
+
+Here's a table of the predicted vs actual results.
+
+```{r,  include=FALSE}
+#logistic model with oversampled training data
+oversampled.log.reg <- glm(not.fully.paid~., family="binomial", data=loan_train_oversample)
+summary(oversampled.log.reg)
+
+#fixing mis-matched levels between train and test sets
+oversampled.log.reg$xlevels$delinq.2yrs <- union(oversampled.log.reg$xlevels$delinq.2yrs, levels(loan_test$delinq.2yrs))
+
+#making predictions
+preds <- predict(oversampled.log.reg, loan_test, type='response')
+summary(preds)
+
+#making a prediction cutoff to create the confusion matrix
+pred_cut_off <- ifelse(preds>0.5,1,0)
+```
+
+```{r,echo=TRUE, include=TRUE}
+table(loan_test$not.fully.paid,pred_cut_off)
+```
+
+---
+
+```{r}
+#creating a prediction object to extract the ROC and AUC
+predictions <- prediction(pred_cut_off,loan_test$not.fully.paid)
+performance <- performance(predictions, "tpr", "fpr")
+
+#AUC
+perf <- performance(predictions, "auc")
+print(perf@y.values[[1]])
+```
+
+```{r, echo=TRUE, include=TRUE, fig.height = 3, fig.width = 5}
+#ROC Curve
+roc.curve(loan_test$not.fully.paid, pred_cut_off, col="red", main="The ROC-curve for Model with cut-off=0.5")
+```
+
+## Summary
+
+The first model (SVM) had an AUC of 0.537 and the second logistic regression model had a slightly better AUC of 0.61.
+
+A perfect model would have an AUC of 1, whereas an AUC of 0.5 would be similar to tossing a coin - so both models aren't fantastic... 
+
+Although I looked online and I think the highest AUC I could find was about 0.7 for this dataset
+
+## Lessons learnt?
+1. Choose an easy dataset, especially for an interview workshop :)
+2. Don't always jump to the fancy models - I spent alot of time trying to tune the SVM model when I should have started with the logistic regression model and might have had time to explore other models.
+
+## Next Steps & Questions?
+- Random Forest, GBM, Ensemble models
+- Feature engineering
+- Use the full dataset (I found a cut-down version online to save me time on the computation)
